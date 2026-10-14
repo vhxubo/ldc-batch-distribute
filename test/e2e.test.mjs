@@ -22,20 +22,21 @@ async function until(fn, timeout = 10000, step = 60) {
   }
 }
 
+// 模拟数据统一以 vhxubo（https://linux.do/u/vhxubo.json）为基准，变体仅改 id/username 以覆盖各分支
 const USERS_JSON_SAMPLE = JSON.stringify([
-  { id: 6799, username: 'gjkldsjgjlkf', name: '馄饨', avatar_template: '/user_avatar/linux.do/gjkldsjgjlkf/{size}/116979_2.png' },
-  { id: 20078, username: 'jackal', name: 'jackal' },
-  { id: 20078, username: 'jackal-dup', name: '' }, // 重复 id → 去重
+  { id: 76303, username: 'vhxubo', name: '归谜', avatar_template: '/user_avatar/linux.do/vhxubo/{size}/2261510_2.png', trust_level: 3 },
+  { id: 76303, username: 'vhxubo-dup', name: '' }, // 重复 id → 去重
   { id: 'abc', username: 'noid' }, // 无效 → 跳过
-  { id: 24726, username: 'SSSS', name: '抹茶毛巾卷' },
+  { id: 76304, username: 'vhxubo-2', name: '' },
+  { id: 76305, username: 'vhxubo-3', name: '' },
 ])
 
 const USERS_JSON_LIVE = JSON.stringify([
-  { id: 11, username: 'alice', name: 'A' },
-  { id: 12, username: 'bob', name: 'B' },
-  { id: 13, username: 'carl-fail', name: 'C' },
-  { id: 14, username: 'dave-unknown', name: 'D' },
-  { id: 999999, username: 'eve-rich', name: 'E' }, // mock: 收款人不存在
+  { id: 76303, username: 'vhxubo', name: '归谜' },
+  { id: 76304, username: 'vhxubo-2', name: '' },
+  { id: 76305, username: 'vhxubo-fail', name: '' }, // mock: username 含 fail → 业务失败
+  { id: 76306, username: 'vhxubo-unknown', name: '' }, // mock: username 含 unknown → 状态未知
+  { id: 999999, username: 'vhxubo-rich', name: '' }, // mock: 收款人不存在
 ])
 
 function makeWorld({ storeSeed } = {}) {
@@ -205,7 +206,7 @@ const testImportAndQuota = check('名单导入：解析/去重/跳过 + 统一�
   assert.ok(T.id('frp-rostersum').textContent.includes('合计 2.55 LDC'), '1.98-0.66+1.23=2.55')
 
   // 搜索过滤
-  T.id('frp-search').value = 'SSSS'
+  T.id('frp-search').value = 'vhxubo-2'
   T.id('frp-search').dispatchEvent(new T.w.Event('input', { bubbles: true }))
   assert.equal(T.id('frp-rosterwrap').querySelectorAll('tbody tr').length, 1, '搜索过滤到 1 行')
   T.dom.window.close()
@@ -256,10 +257,10 @@ const testDryRun = check('演练模式：成功/失败/待对账模拟，且不�
   const b = T.batches()[0]
   assert.equal(b.mode, 'dry')
   const by = Object.fromEntries(b.rows.map((r) => [r.username, r.status]))
-  assert.equal(by['alice'], 'success', 'alice 成功')
-  assert.equal(by['carl-fail'], 'failed', 'carl-fail 模拟失败')
-  assert.equal(by['dave-unknown'], 'unknown', 'dave-unknown 模拟待对账')
-  assert.equal(by['eve-rich'], 'success', 'eve-rich 成功')
+  assert.equal(by['vhxubo'], 'success', 'vhxubo 成功')
+  assert.equal(by['vhxubo-fail'], 'failed', 'vhxubo-fail 模拟失败')
+  assert.equal(by['vhxubo-unknown'], 'unknown', 'vhxubo-unknown 模拟待对账')
+  assert.equal(by['vhxubo-rich'], 'success', 'vhxubo-rich 成功')
   assert.equal(T.netlog.length, 0, '演练零网络请求，实际: ' + JSON.stringify(T.netlog))
   // 演练批次对账 → 定性为失败
   T.tab('audit').click()
@@ -287,28 +288,28 @@ const testLiveRun = check('实发 mock：成功/业务失败/状态未知 + 查�
   await until(() => ['done', 'paused', 'stopped'].includes(T.batches()[0].status), 20000)
   let b = T.batches()[0]
   const row = (name) => T.batches()[0].rows.find((r) => r.username === name)
-  assert.equal(row('alice').status, 'success', 'alice 成功')
-  assert.ok(/^MOCK/.test(row('alice').tradeNo), 'alice 有交易号')
-  assert.equal(row('bob').status, 'success', 'bob 成功')
-  assert.equal(row('carl-fail').status, 'failed', 'carl-fail 失败')
-  assert.ok(row('carl-fail').error.includes('余额不足'), '余额不足透出')
-  assert.equal(row('dave-unknown').status, 'unknown', 'dave-unknown 待对账')
-  assert.equal(row('eve-rich').status, 'failed', 'eve-rich 失败（收款人不存在）')
+  assert.equal(row('vhxubo').status, 'success', 'vhxubo 成功')
+  assert.ok(/^MOCK/.test(row('vhxubo').tradeNo), 'vhxubo 有交易号')
+  assert.equal(row('vhxubo-2').status, 'success', 'vhxubo-2 成功')
+  assert.equal(row('vhxubo-fail').status, 'failed', 'vhxubo-fail 失败')
+  assert.ok(row('vhxubo-fail').error.includes('余额不足'), '余额不足透出')
+  assert.equal(row('vhxubo-unknown').status, 'unknown', 'vhxubo-unknown 待对账')
+  assert.equal(row('vhxubo-rich').status, 'failed', 'vhxubo-rich 失败（收款人不存在）')
   assert.ok(b.status === 'paused' || b.status === 'done', '批次暂停/完成')
 
-  // 查单对账：dave-unknown 的单号已在 mock 上游落地 → 补记成功
+  // 查单对账：vhxubo-unknown 的单号已在 mock 上游落地 → 补记成功
   T.tab('audit').click()
   T.btnIn('查单对账').click()
-  await until(() => row('dave-unknown').status === 'success', 8000)
-  assert.ok(/^MOCKT/.test(row('dave-unknown').tradeNo), '对账找回交易号')
+  await until(() => row('vhxubo-unknown').status === 'success', 8000)
+  assert.ok(/^MOCKT/.test(row('vhxubo-unknown').tradeNo), '对账找回交易号')
 
   // 失败重试：单号必须复用
-  const before = row('carl-fail').outTradeNo
+  const before = row('vhxubo-fail').outTradeNo
   T.btnIn('重试失败').click()
-  await until(() => ['done', 'paused'].includes(T.batches()[0].status) && row('carl-fail').finishedAt > 0, 15000)
+  await until(() => ['done', 'paused'].includes(T.batches()[0].status) && row('vhxubo-fail').finishedAt > 0, 15000)
   const b2 = T.batches()[0]
   void b
-  assert.equal(b2.rows.find((r) => r.username === 'carl-fail').outTradeNo, before, '重试复用原单号')
+  assert.equal(b2.rows.find((r) => r.username === 'vhxubo-fail').outTradeNo, before, '重试复用原单号')
 
   // 网络出口审计：全部请求都指向 credit.linux.do 且只有两条路径
   const paths = new Set(T.netlog.map((l) => new URL(l.split(' ')[1]).pathname))
@@ -374,9 +375,9 @@ const testInterruptedRecovery = check('中断恢复：running 批次重载后转
         remark: '粉丝红包',
         pid: 'goodpid',
         rows: [
-          { id: 11, username: 'alice', name: '', amountCents: 10, outTradeNo: 'FRPTEST001', status: 'success', tradeNo: 'MOCKA', error: '', finishedAt: 1 },
-          { id: 12, username: 'bob', name: '', amountCents: 10, outTradeNo: 'FRPTEST002', status: 'sending', tradeNo: '', error: '', finishedAt: 0 },
-          { id: 13, username: 'carl-fail', name: '', amountCents: 10, outTradeNo: 'FRPTEST003', status: 'pending', tradeNo: '', error: '', finishedAt: 0 },
+          { id: 76303, username: 'vhxubo', name: '', amountCents: 10, outTradeNo: 'FRPTEST001', status: 'success', tradeNo: 'MOCKA', error: '', finishedAt: 1 },
+          { id: 76304, username: 'vhxubo-2', name: '', amountCents: 10, outTradeNo: 'FRPTEST002', status: 'sending', tradeNo: '', error: '', finishedAt: 0 },
+          { id: 76305, username: 'vhxubo-fail', name: '', amountCents: 10, outTradeNo: 'FRPTEST003', status: 'pending', tradeNo: '', error: '', finishedAt: 0 },
         ],
         events: [],
       },
@@ -393,8 +394,8 @@ const testInterruptedRecovery = check('中断恢复：running 批次重载后转
   await saveSessionCred(T)
   T.tab('run').click()
   T.btnIn('继续发放').click()
-  await until(() => T.batches()[0].rows[2].status === 'failed', 12000) // carl-fail → 余额不足
-  // 对账 unknown：bob 的单号未在 mock 落地 → failed（未落地）
+  await until(() => T.batches()[0].rows[2].status === 'failed', 12000) // vhxubo-fail → 余额不足
+  // 对账 unknown：vhxubo-2 的单号未在 mock 落地 → failed（未落地）
   T.tab('audit').click()
   T.btnIn('查单对账').click()
   await until(() => T.batches()[0].rows[1].status === 'failed', 8000)
@@ -407,13 +408,13 @@ const testAuditExportClear = check('审计：批次明细/操作日志/导出/�
   T.open()
   await saveSessionCred(T)
   T.tab('roster').click()
-  await importRoster(T, JSON.stringify([{ id: 11, username: 'alice', name: 'A' }]))
+  await importRoster(T, JSON.stringify([{ id: 76303, username: 'vhxubo', name: '归谜' }]))
   T.id('frp-uniform').value = '0.05'
   T.btn('应用到已勾选').click()
   await startBatch(T, 'live')
   await until(() => ['done', 'paused'].includes(T.batches()[0].status), 12000)
   T.tab('audit').click()
-  assert.ok(T.id('frp-sec-audit').textContent.includes('alice'), '批次明细含用户')
+  assert.ok(T.id('frp-sec-audit').textContent.includes('vhxubo'), '批次明细含用户')
   assert.ok(T.id('frp-sec-audit').textContent.includes('batch.start'), '事件流水')
   assert.ok(T.id('frp-sec-audit').textContent.includes('roster.import'), '操作日志')
   // 导出

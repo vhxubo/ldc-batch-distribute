@@ -94,38 +94,15 @@
     unknown: '待对账',
   }
 
-  // 用户提供的示例名单（仅作一键填入演示，可自行清空）
+  // 示例名单（仅作一键填入演示，可自行清空）
   const SAMPLE_JSON = JSON.stringify([
-    { id: 6799, username: 'gjkldsjgjlkf' },
-    { id: 20078, username: 'jackal' },
-    { id: 24726, username: 'SSSS' },
-    { id: 63466, username: 'nanablast' },
-    { id: 72353, username: 'jskb' },
-    { id: 96362, username: 'ablazespark' },
-    { id: 160462, username: 'freemutation' },
-    { id: 195550, username: 'huanyu' },
-    { id: 220680, username: 'JSFX-235' },
-    { id: 251672, username: 'xiaoyan' },
-    { id: 302148, username: 'LastHuman' },
-    { id: 302770, username: 'kukudelaomao' },
-    { id: 306499, username: 'bin01' },
-    { id: 307436, username: 'matserpro' },
-    { id: 310687, username: 'bin10' },
-    { id: 311842, username: 'NanFengQi' },
-    { id: 328152, username: 'baicai492' },
-    { id: 356560, username: 'dnuagc' },
-    { id: 368516, username: 'Mikeber' },
-    { id: 370984, username: 'casperld' },
-    { id: 372453, username: 'jackiex' },
-    { id: 382464, username: 'phpdever' },
-    { id: 383986, username: 'supercow' },
-    { id: 420219, username: 'decade_ye' },
-    { id: 427403, username: 'RzMY' },
-    { id: 432477, username: 'hg3317593' },
-    { id: 446525, username: 'huangao' },
-    { id: 453328, username: 'setide' },
-    { id: 469601, username: 'wamsdf' },
-    { id: 475033, username: 'subo' },
+    {
+      id: 76303,
+      username: 'vhxubo',
+      name: '归谜',
+      avatar_template: '/user_avatar/linux.do/vhxubo/{size}/2261510_2.png',
+      trust_level: 3,
+    },
   ])
 
   // ============================== 小工具 ==============================
@@ -1091,7 +1068,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       <section class="frp-sec" id="frp-sec-roster">
         <div class="frp-card">
           <h3>导入名单（只要求 id 与 username：粘贴 JSON 数组 / 整份 /u/用户名.json / 单个用户对象，或按用户名查询、一键拉取我的粉丝）</h3>
-          <textarea class="frp-input" id="frp-paste" placeholder='支持任意来源，例如：[{"id":6799,"username":"gjkldsjgjlkf"}, …] 或整份 https://linux.do/u/用户名.json 响应'></textarea>
+          <textarea class="frp-input" id="frp-paste" placeholder='支持任意来源，例如：[{"id":76303,"username":"vhxubo"}, …] 或整份 https://linux.do/u/用户名.json 响应'></textarea>
           <div class="frp-row" style="margin-top:8px">
             <button class="frp-btn pri" id="frp-import">解析并导入</button>
             <button class="frp-btn" id="frp-sample">填入示例</button>
