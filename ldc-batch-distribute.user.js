@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         LDC 批量分发
 // @namespace    vhxubo.ldc.batch-distribute
-// @version      1.2.0
-// @description  名单来源自由：粘贴 id/username JSON（含整份 /u/用户名.json）、按用户名查询添加、快捷键 Alt+F 一键拉取我的粉丝 → 统一/单独设置额度 → 通过 credit.linux.do 商户密钥批量打款。无后端、无数据库：数据全部存本机浏览器，除 LDC 支付接口与 linux.do 同源接口外不发任何网络请求，发放全程留痕可审计、可导出。
+// @version      1.3.0
+// @description  名单来源自由：粘贴 id/username JSON（含整份 /u/用户名.json）、按用户名查询添加、快捷键 Alt+F 一键拉取我的粉丝；展示头像与信任等级 → 统一/单独设置额度 → 通过 credit.linux.do 商户密钥批量打款。无后端、无数据库：数据全部存本机浏览器，除 LDC 支付接口与 linux.do 同源接口外不发任何网络请求，发放全程留痕可审计、可导出。
 // @author       vhxubo
 // @license      MIT
 // @match        https://linux.do/*
@@ -18,7 +18,7 @@
 // ==/UserScript==
 
 /**
- * 设计要点（契约与安全细节对齐 ldc-redpacket / ldc-patron 的 ldc 客户端）：
+ * 设计要点：
  *
  * 接口（https://credit.linux.do，仅 /lpay/ 与 /epay/ 前缀在 Cloudflare 放行名单内）：
  *  - POST /lpay/distribute   Basic Auth(client_id:client_secret) 商户分发打款。
@@ -29,7 +29,7 @@
  *      msg 含「商户信息不存在」= 密钥错误；含「订单不存在/服务不存在」= 密钥正确且该单未落地
  *      （据此做零成本密钥校验与打款对账）；code===1 = 订单存在，返回 trade_no。
  *
- * 资金安全（照搬 ldc-redpacket 的「先落库再打款 + 单号幂等」模型）：
+ * 资金安全（先落库再打款 + 单号幂等）：
  *  - 批次与每笔的商户单号（out_trade_no）在实际发请求之前就写入本地存储；
  *  - 重试一律复用原单号（上游若幂等则天然去重，事后对账也能发现）；
  *  - 网络层失败/响应不可解析 → 「待对账(unknown)」，绝不自动重试，必须先查单定性：
@@ -40,15 +40,17 @@
  * 密钥默认仅存内存（刷新即失）；可选「加密记住」：AES-256-GCM + PBKDF2-SHA256(310k) 口令加密后落盘。
  *
  * 名单拉取与查询（快捷键 Alt+F / 油猴菜单 / 面板按钮，全部走 linux.do 同源、携带当前登录会话）：
- *  - GET https://linux.do/my/follow/followers.json（站点旧版路径 /myu/follow/followers.json 自动回退）
+ *  - GET https://linux.do/my/follow/followers.json
  *    拉取你自己的粉丝列表，自动翻页合并，按 id 去重、截断至 MAX_ROWS 后整体导入名单。
  *  - GET https://linux.do/u/:username.json：按用户名查询用户，提取 id / username / name 后追加进名单；
  *    把整份该接口响应粘进导入框也能直接导入（只取 user 主体，忽略顶层的 users/badges 等）。
  *  - 同源请求仅访问 linux.do 本身，不经过任何第三方；未登录或站点改版会明确报错，绝不静默吞掉。
  *
- * 名单的唯一硬性要求：数字 id + username（打款接口的必要参数）；name 仅作展示，可有可无。
+ * 名单的唯一硬性要求：数字 id + username（打款接口的必要参数）；name / avatar_template / trust_level
+ * 可选，仅用于展示：头像取自 linux.do/ldstatic CDN（{size} 占位符），加载失败自动回退本机生成的色块。
  *
- * 网络出口共三条：credit.linux.do（@connect 白名单）与上述两条 linux.do 同源接口，其余一律不发。
+ * 网络出口共三类：credit.linux.do（@connect 白名单）、上述两条 linux.do 同源接口，
+ * 以及 linux.do/ldstatic 头像 CDN（仅 <img> 展示）；除此之外一律不发。
  */
 
 (function () {
@@ -59,7 +61,7 @@
   const LDC_BASE = 'https://credit.linux.do'
   const QUERY_PATH = '/epay/api.php'
   const DISTRIBUTE_PATH = '/lpay/distribute'
-  const VERSION = '1.2.0'
+  const VERSION = '1.3.0'
   const REQUEST_TIMEOUT_MS = 30_000
   const MAX_BODY = 1 << 20
   const PBKDF2_ITERATIONS = 310_000
@@ -80,8 +82,8 @@
   const REMARK_MAX = 100
   const DISPATCH_GAP_MS = 200 // 相邻两笔之间的间隔，避免触发限流
 
-  // 「我的粉丝」同源接口：不同站点版本路径不同，依次探测；.json 取 Discourse JSON 形态
-  const FOLLOW_PATHS = ['/my/follow/followers.json', '/myu/follow/followers.json']
+  // 「我的粉丝」同源接口（Discourse JSON 形态）
+  const FOLLOW_PATH = '/my/follow/followers.json'
   const FOLLOW_PAGE_CAP = 40 // 自动翻页保护上限
 
   const STATUS_TEXT = {
@@ -94,36 +96,36 @@
 
   // 用户提供的示例名单（仅作一键填入演示，可自行清空）
   const SAMPLE_JSON = JSON.stringify([
-    { id: 6799, username: 'gjkldsjgjlkf', name: '馄饨' },
-    { id: 20078, username: 'jackal', name: 'jackal' },
-    { id: 24726, username: 'SSSS', name: '抹茶毛巾卷' },
-    { id: 63466, username: 'nanablast', name: 'nanablast' },
-    { id: 72353, username: 'jskb', name: '丢掉幻想，准备斗争' },
-    { id: 96362, username: 'ablazespark', name: '' },
-    { id: 160462, username: 'freemutation', name: 'freemutation' },
-    { id: 195550, username: 'huanyu', name: 'huan' },
-    { id: 220680, username: 'JSFX-235', name: '光风霁月揽星波' },
-    { id: 251672, username: 'xiaoyan', name: 'xiaoyan' },
-    { id: 302148, username: 'LastHuman', name: 'LastHuman' },
-    { id: 302770, username: 'kukudelaomao', name: '' },
-    { id: 306499, username: 'bin01', name: 'bin01' },
-    { id: 307436, username: 'matserpro', name: 'dijkstra' },
-    { id: 310687, username: 'bin10', name: '' },
-    { id: 311842, username: 'NanFengQi', name: '南风起' },
-    { id: 328152, username: 'baicai492', name: '白菜' },
-    { id: 356560, username: 'dnuagc', name: '羊' },
-    { id: 368516, username: 'Mikeber', name: '小叶子' },
-    { id: 370984, username: 'casperld', name: 'casperkk' },
-    { id: 372453, username: 'jackiex', name: '' },
-    { id: 382464, username: 'phpdever', name: 'phpdever' },
-    { id: 383986, username: 'supercow', name: 'Jakedo' },
-    { id: 420219, username: 'decade_ye', name: 'decade' },
-    { id: 427403, username: 'RzMY', name: 'RzMY' },
-    { id: 432477, username: 'hg3317593', name: 'Atonement' },
-    { id: 446525, username: 'huangao', name: 'huangao' },
-    { id: 453328, username: 'setide', name: '' },
-    { id: 469601, username: 'wamsdf', name: '' },
-    { id: 475033, username: 'subo', name: 'Subo' },
+    { id: 6799, username: 'gjkldsjgjlkf' },
+    { id: 20078, username: 'jackal' },
+    { id: 24726, username: 'SSSS' },
+    { id: 63466, username: 'nanablast' },
+    { id: 72353, username: 'jskb' },
+    { id: 96362, username: 'ablazespark' },
+    { id: 160462, username: 'freemutation' },
+    { id: 195550, username: 'huanyu' },
+    { id: 220680, username: 'JSFX-235' },
+    { id: 251672, username: 'xiaoyan' },
+    { id: 302148, username: 'LastHuman' },
+    { id: 302770, username: 'kukudelaomao' },
+    { id: 306499, username: 'bin01' },
+    { id: 307436, username: 'matserpro' },
+    { id: 310687, username: 'bin10' },
+    { id: 311842, username: 'NanFengQi' },
+    { id: 328152, username: 'baicai492' },
+    { id: 356560, username: 'dnuagc' },
+    { id: 368516, username: 'Mikeber' },
+    { id: 370984, username: 'casperld' },
+    { id: 372453, username: 'jackiex' },
+    { id: 382464, username: 'phpdever' },
+    { id: 383986, username: 'supercow' },
+    { id: 420219, username: 'decade_ye' },
+    { id: 427403, username: 'RzMY' },
+    { id: 432477, username: 'hg3317593' },
+    { id: 446525, username: 'huangao' },
+    { id: 453328, username: 'setide' },
+    { id: 469601, username: 'wamsdf' },
+    { id: 475033, username: 'subo' },
   ])
 
   // ============================== 小工具 ==============================
@@ -198,7 +200,7 @@
   }
   function csvCell(v) {
     let s = String(v ?? '')
-    // 公式注入防护：以 =+-@ 开头的单元格前置单引号（与 ldc-patron 导出口径一致）
+    // 公式注入防护：以 =+-@ 开头的单元格前置单引号
     if (/^[=+\-@]/.test(s)) s = "'" + s
     return '"' + s.replace(/"/g, '""') + '"'
   }
@@ -498,23 +500,9 @@
     fetchingFollowers = true
     setFetchBtn(true)
     try {
-      // 1) 探测可用路径（/my/... 优先，旧版 /myu/... 回退）
-      let base = ''
-      let json = null
-      let lastErr = null
-      for (const p of FOLLOW_PATHS) {
-        try {
-          json = await fetchFollowJson(location.origin + p)
-        } catch (e) {
-          lastErr = e
-          continue
-        }
-        if (extractUserList(json)) {
-          base = p
-          break
-        }
-      }
-      if (!base) throw lastErr || new Error('接口返回了无法识别的结构（可能未登录或站点已改版）')
+      // 1) 拉取第一页
+      let json = await fetchFollowJson(location.origin + FOLLOW_PATH)
+      if (!extractUserList(json)) throw new Error('接口返回了无法识别的结构（可能未登录或站点已改版）')
 
       // 2) 翻页合并：优先响应提供的 more 链接，否则 ?page=N 递增；
       //    站点可能忽略翻页参数重复返回同一页，连续两次内容未推进即认为已到底
@@ -529,7 +517,7 @@
         if (!list.length || raw.length >= MAX_ROWS || page >= FOLLOW_PAGE_CAP) break
         const firstId = list[0] && list[0].id
         const more = extractMoreUrl(json)
-        json = await fetchFollowJson(more || location.origin + base + '?page=' + (page + 1))
+        json = await fetchFollowJson(more || location.origin + FOLLOW_PATH + '?page=' + (page + 1))
         const next = extractUserList(json)
         if (!next || !next.length) break
         const stale = next[0] && firstId != null && next[0].id === firstId && next.length === list.length
@@ -562,14 +550,30 @@
 
   let lookingUp = false
 
-  /** 追加一个用户到名单（按 id 去重、受 MAX_ROWS 上限约束）；返回 'added' | 'dup' | 'full' */
+  /** 追加一个用户到名单（按 id 去重、受 MAX_ROWS 上限约束）；返回 'added' | 'dup' | 'full'。重复时仅刷新展示字段（name/头像/等级），不动额度与勾选 */
   function addRosterUser(u) {
     const id = Number(u && u.id)
     const username = String((u && u.username) ?? '').trim()
     if (!Number.isInteger(id) || id <= 0 || !username) return 'dup' // 无效按已存在处理，调用方另行校验
-    if (state.roster.users.some((x) => x.id === id)) return 'dup'
+    const ex = state.roster.users.find((x) => x.id === id)
+    if (ex) {
+      const name = String((u && u.name) ?? '').trim()
+      if (name) ex.name = name
+      if (u && u.avatar) ex.avatar = String(u.avatar).trim()
+      const tl = normTrustLevel(u && u.trustLevel)
+      if (tl !== null) ex.trustLevel = tl
+      return 'dup'
+    }
     if (state.roster.users.length >= MAX_ROWS) return 'full'
-    state.roster.users.push({ id, username, name: String((u && u.name) ?? '').trim(), included: true, amountCents: 0 })
+    state.roster.users.push({
+      id,
+      username,
+      name: String((u && u.name) ?? '').trim(),
+      avatar: String((u && u.avatar) ?? '').trim(),
+      trustLevel: normTrustLevel(u && u.trustLevel),
+      included: true,
+      amountCents: 0,
+    })
     return 'added'
   }
 
@@ -621,7 +625,13 @@
           const id = Number(u && u.id)
           const username = String((u && u.username) ?? '').trim()
           if (!Number.isInteger(id) || id <= 0 || !username) throw new Error('响应中没有有效用户')
-          const r = addRosterUser({ id, username, name: String((u && u.name) ?? '').trim() })
+          const r = addRosterUser({
+            id,
+            username,
+            name: String((u && u.name) ?? '').trim(),
+            avatar: String((u && u.avatar_template) ?? '').trim(),
+            trustLevel: normTrustLevel(u && u.trust_level),
+          })
           if (r === 'added') added++
           else if (r === 'full') full++
           else dup++
@@ -684,6 +694,8 @@
         id: u.id,
         username: u.username,
         name: u.name,
+        avatar: u.avatar || '',
+        trustLevel: typeof u.trustLevel === 'number' ? u.trustLevel : null,
         amountCents: u.amountCents,
         outTradeNo: newOutTradeNo(batchId, i),
         status: 'pending',
@@ -1004,6 +1016,13 @@ table.frp td{padding:6px 10px;border-bottom:1px solid var(--line);vertical-align
 table.frp tr:last-child td{border-bottom:none}
 table.frp td.num{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 .frp-ava{width:28px;height:28px;border-radius:50%;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex:none}
+.frp-ava-img{width:28px;height:28px;border-radius:50%;flex:none;object-fit:cover;background:var(--card)}
+.frp-tl{display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;line-height:1;padding:2px 5px;border-radius:5px;flex:none;font-family:ui-monospace,Menlo,Consolas,monospace}
+.frp-tl.tl0{background:color-mix(in srgb,var(--muted) 16%,transparent);color:var(--muted)}
+.frp-tl.tl1{background:color-mix(in srgb,#3b82f6 16%,transparent);color:var(--acc)}
+.frp-tl.tl2{background:color-mix(in srgb,#16a34a 16%,transparent);color:var(--ok)}
+.frp-tl.tl3{background:color-mix(in srgb,#f59e0b 20%,transparent);color:var(--warn)}
+.frp-tl.tl4{background:color-mix(in srgb,#e11d48 15%,transparent);color:var(--pri)}
 .frp-un{display:flex;align-items:center;gap:8px;min-width:140px}
 .frp-un .nm{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .frp-un .nm small{color:var(--muted);font-weight:400}
@@ -1072,7 +1091,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       <section class="frp-sec" id="frp-sec-roster">
         <div class="frp-card">
           <h3>导入名单（只要求 id 与 username：粘贴 JSON 数组 / 整份 /u/用户名.json / 单个用户对象，或按用户名查询、一键拉取我的粉丝）</h3>
-          <textarea class="frp-input" id="frp-paste" placeholder='支持任意来源，例如：[{"id":6799,"username":"gjkldsjgjlkf","name":"馄饨"}, …] 或整份 https://linux.do/u/用户名.json 响应'></textarea>
+          <textarea class="frp-input" id="frp-paste" placeholder='支持任意来源，例如：[{"id":6799,"username":"gjkldsjgjlkf"}, …] 或整份 https://linux.do/u/用户名.json 响应'></textarea>
           <div class="frp-row" style="margin-top:8px">
             <button class="frp-btn pri" id="frp-import">解析并导入</button>
             <button class="frp-btn" id="frp-sample">填入示例</button>
@@ -1095,7 +1114,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
             <input class="frp-input" id="frp-search" style="width:180px" placeholder="搜索用户名 / 昵称 / ID">
             <span class="frp-pill" id="frp-rostersum"></span>
           </div>
-          <div class="frp-hint">头像为本地生成的首字母色块（不请求外部图片）；在右侧输入框可为单个用户设置不同额度，留空或 0 视为未设置（发放前会拦截）。</div>
+          <div class="frp-hint">头像与信任级别（TL）直接取自名单数据（avatar_template / trust_level 字段）；头像加载失败时自动回退为本地生成的色块。在右侧输入框可为单个用户设置不同额度，留空或 0 视为未设置（发放前会拦截）。</div>
           <div class="frp-tblwrap" id="frp-rosterwrap"></div>
         </div>
       </section>
@@ -1138,7 +1157,8 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
     toastTimer = setTimeout(() => t.remove(), kind === 'error' || kind === 'warn' ? 5200 : 2600)
   }
 
-  function avatarEl(username) {
+  /** 本地生成的首字母色块：无头像数据或图片加载失败时的回退 */
+  function placeholderAvatar(username) {
     const hue = hashHue(username)
     const ch = [...String(username)][0] || '?'
     return h('span', {
@@ -1147,6 +1167,46 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       style: `background:hsl(${hue},62%,46%)`,
       title: username,
     })
+  }
+
+  /** avatar_template → 真实 URL：替换 {size} 占位符，相对路径补 linux.do 域 */
+  function avatarUrl(tpl) {
+    const path = String(tpl || '').trim()
+    if (!path) return ''
+    try {
+      return new URL(path.replaceAll('{size}', '45'), location.origin).href
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * 头像：优先用名单数据自带的 avatar_template（linux.do / ldstatic CDN，仅 <img> 展示，
+   * 不发任何其他请求）；无数据或加载失败时回退为本地生成的首字母色块。
+   */
+  function avatarEl(u) {
+    const username = typeof u === 'string' ? u : (u && u.username) || '?'
+    const url = typeof u === 'object' && u ? avatarUrl(u.avatar) : ''
+    if (url) {
+      const img = h('img', {
+        class: 'frp-ava-img',
+        src: url,
+        alt: '',
+        loading: 'lazy',
+        referrerpolicy: 'no-referrer',
+        title: username,
+      })
+      img.addEventListener('error', () => img.replaceWith(placeholderAvatar(username)))
+      return img
+    }
+    return placeholderAvatar(username)
+  }
+
+  /** 信任级别徽章：TL0-TL4；未知（null/undefined）不展示 */
+  function trustBadge(tl) {
+    if (typeof tl !== 'number' || tl < 0) return null
+    const v = Math.min(tl, 4)
+    return h('span', { class: 'frp-tl tl' + v, text: 'TL' + v, title: '信任级别 ' + v })
   }
 
   function badge(status) {
@@ -1248,7 +1308,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
           'tr',
           { style: u.included ? '' : 'opacity:.45' },
           h('td', null, cb),
-          h('td', null, h('span', { class: 'frp-un' }, avatarEl(u.username), h('span', { class: 'nm' }, u.username, u.name && u.name !== u.username ? h('small', null, ' · ' + u.name) : null))),
+          h('td', null, h('span', { class: 'frp-un' }, avatarEl(u), h('span', { class: 'nm' }, u.username, u.name && u.name !== u.username ? h('small', null, ' · ' + u.name) : null), trustBadge(u.trustLevel))),
           h('td', { class: 'num', text: String(u.id) }),
           h('td', null, amountInput),
           h('td', null, h('button', { class: 'frp-x', title: '移除', text: '✕', onclick: () => removeRosterUser(u.id) })),
@@ -1271,6 +1331,12 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
     renderRosterTab()
   }
 
+  /** 信任级别归一：0-4 整数有效，其余（缺失/异常）返回 null 表示未知 */
+  function normTrustLevel(v) {
+    const tl = Number(v)
+    return Number.isInteger(tl) && tl >= 0 && tl <= 4 ? tl : null
+  }
+
   /** 解析用户数组为名单行：仅提取 id/username/name，按 id 去重，超过 MAX_ROWS 截断 */
   function parseUserArray(data) {
     if (!Array.isArray(data)) return { error: '顶层必须是 JSON 数组' }
@@ -1291,7 +1357,15 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
         continue
       }
       seen.add(id)
-      users.push({ id, username, name: String((it && it.name) ?? '').trim(), included: true, amountCents: 0 })
+      users.push({
+        id,
+        username,
+        name: String((it && it.name) ?? '').trim(),
+        avatar: String((it && it.avatar_template) ?? '').trim(), // {size} 占位符，展示时替换
+        trustLevel: normTrustLevel(it && it.trust_level),
+        included: true,
+        amountCents: 0,
+      })
       if (users.length >= MAX_ROWS) {
         truncated = true
         break
@@ -1567,7 +1641,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       const tr = h(
         'tr',
         null,
-        h('td', null, h('span', { class: 'frp-un' }, avatarEl(r.username), h('span', { class: 'nm' }, r.username, r.name && r.name !== r.username ? h('small', null, ' · ' + r.name) : null))),
+        h('td', null, h('span', { class: 'frp-un' }, avatarEl(r), h('span', { class: 'nm' }, r.username, r.name && r.name !== r.username ? h('small', null, ' · ' + r.name) : null), trustBadge(r.trustLevel))),
         h('td', { class: 'num', text: String(r.id) }),
         h('td', { class: 'num', text: fmtCents(r.amountCents) }),
         h('td', null, badge(r.status)),
@@ -1721,7 +1795,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
         h(
           'tr',
           null,
-          h('td', null, h('span', { class: 'frp-un' }, avatarEl(r.username), h('span', { class: 'nm' }, r.username))),
+          h('td', null, h('span', { class: 'frp-un' }, avatarEl(r), h('span', { class: 'nm' }, r.username), trustBadge(r.trustLevel))),
           h('td', { class: 'num', text: String(r.id) }),
           h('td', { class: 'num', text: fmtCents(r.amountCents) }),
           h('td', null, badge(r.status)),
@@ -1919,9 +1993,11 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
           h('br'),
           h('code', { text: 'GET  https://linux.do/my/follow/followers.json' }), ' —— 拉取你自己的粉丝名单（同源请求，仅使用你当前登录会话，自动翻页）；',
           h('br'),
-          h('code', { text: 'GET  https://linux.do/u/:username.json' }), ' —— 按用户名查询用户的 id / username / name（同源，查询添加功能）。',
+          h('code', { text: 'GET  https://linux.do/u/:username.json' }), ' —— 按用户名查询用户的 id / username / name（同源，查询添加功能）；',
           h('br'),
-          '除上述出口外无任何其他网络请求：无统计、无 CDN、无头像加载（头像为本机生成的色块）、无字体/样式外链。名单、额度、批次与日志全部保存在本机脚本沙箱（GM 存储），可随时导出或清空。',
+          h('code', { text: 'IMG  linux.do/user_avatar/… 或 cdn*.ldstatic.com' }), ' —— 用户头像图片（仅 <img> 展示，加载失败自动回退本机色块，不发其他请求）。',
+          h('br'),
+          '除上述出口外无任何其他网络请求：无统计、无字体/样式外链。名单、额度、批次与日志全部保存在本机脚本沙箱（GM 存储），可随时导出或清空。',
         ),
       ),
     )
