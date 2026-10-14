@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LDC 批量分发
 // @namespace    vhxubo.ldc.batch-distribute
-// @version      1.3.1
+// @version      1.4.0
 // @description  名单来源自由：粘贴 id/username JSON（含整份 /u/用户名.json）、按用户名查询添加、快捷键 Alt+F 一键拉取我的粉丝；展示头像与信任等级 → 统一/单独设置额度 → 通过 credit.linux.do 商户密钥批量打款。无后端、无数据库：数据全部存本机浏览器，除 LDC 支付接口与 linux.do 同源接口外不发任何网络请求，发放全程留痕可审计、可导出。
 // @author       vhxubo
 // @license      MIT
@@ -61,7 +61,7 @@
   const LDC_BASE = 'https://credit.linux.do'
   const QUERY_PATH = '/epay/api.php'
   const DISTRIBUTE_PATH = '/lpay/distribute'
-  const VERSION = '1.3.1'
+  const VERSION = '1.4.0'
   const REQUEST_TIMEOUT_MS = 30_000
   const MAX_BODY = 1 << 20
   const PBKDF2_ITERATIONS = 310_000
@@ -1068,8 +1068,8 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
 
       <section class="frp-sec" id="frp-sec-roster">
         <div class="frp-card">
-          <h3>导入名单（只要求 id 与 username：粘贴 JSON 数组 / 整份 /u/用户名.json / 单个用户对象，或按用户名查询、一键拉取我的粉丝）</h3>
-          <textarea class="frp-input" id="frp-paste" placeholder='支持任意来源，例如：[{"id":76303,"username":"vhxubo"}, …] 或整份 https://linux.do/u/用户名.json 响应'></textarea>
+          <h3>导入名单</h3>
+          <textarea class="frp-input" id="frp-paste" placeholder='[{"id":76303,"username":"vhxubo"}, …]（也支持整份 /u/用户名.json 响应）'></textarea>
           <div class="frp-row" style="margin-top:8px">
             <button class="frp-btn pri" id="frp-import">解析并导入</button>
             <button class="frp-btn" id="frp-sample">填入示例</button>
@@ -1078,10 +1078,9 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
             <span class="frp-hint" id="frp-importmsg"></span>
           </div>
           <div class="frp-row" style="margin-top:8px">
-            <input class="frp-input frp-grow" id="frp-lookup" placeholder="按用户名查询并添加：如 vhxubo，支持多个（空格 / 逗号分隔，自动去掉 @）" autocomplete="off" spellcheck="false">
+            <input class="frp-input frp-grow" id="frp-lookup" placeholder="按用户名查询添加，可多个（空格 / 逗号分隔）" autocomplete="off" spellcheck="false">
             <button class="frp-btn acc" id="frp-lookupbtn">查询并添加</button>
           </div>
-          <div class="frp-hint" style="margin-top:6px">「查询并添加」通过 linux.do 同源接口 /u/用户名.json 自动补齐 id 后追加进名单（按 id 去重，不影响已有额度）；「解析并导入」会整体替换名单。</div>
         </div>
         <div class="frp-card">
           <div class="frp-row">
@@ -1092,7 +1091,6 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
             <input class="frp-input" id="frp-search" style="width:180px" placeholder="搜索用户名 / 昵称 / ID">
             <span class="frp-pill" id="frp-rostersum"></span>
           </div>
-          <div class="frp-hint">头像与信任级别（TL）直接取自名单数据（avatar_template / trust_level 字段）；头像加载失败时自动回退为本地生成的色块。在右侧输入框可为单个用户设置不同额度，留空或 0 视为未设置（发放前会拦截）。</div>
           <div class="frp-tblwrap" id="frp-rosterwrap"></div>
         </div>
       </section>
@@ -1436,12 +1434,12 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
 
     // -- 准备卡片 --
     const checks = []
-    if (!state.cred) checks.push(['err', state.credEnc ? '密钥已加密锁定，请到「密钥设置」解锁' : '尚未配置打款密钥，请到「密钥设置」配置并校验'])
+    if (!state.cred) checks.push(['err', state.credEnc ? '密钥已加密锁定，请先解锁' : '尚未配置打款密钥'])
     else checks.push(['ok', `打款密钥已就绪（商户 ${maskPid(state.cred.clientId)}）`])
     if (!incl.length) checks.push(['err', '名单为空或没有勾选发放对象'])
-    else if (zero) checks.push(['err', `${zero} 个已勾选用户额度为 0，请设置额度（统一或单独）`])
+    else if (zero) checks.push(['err', `${zero} 个已勾选用户未设额度`])
     else checks.push(['ok', `将发放 ${incl.length} 人，合计 ${fmtCents(total)} LDC`])
-    if (hasUnknownRows()) checks.push(['err', `存在 ${unknownCount()} 笔「待对账」记录，请先到「审计」完成查单对账，避免重复发放`])
+    if (hasUnknownRows()) checks.push(['err', `存在 ${unknownCount()} 笔「待对账」记录，请先到「审计」对账`])
 
     const canStart = !checks.some((c) => c[0] === 'err') && !run.active
     const remarkInput = h('input', { class: 'frp-input', value: state.settings.remark, style: 'width:220px', maxlength: String(REMARK_MAX), placeholder: '随转账展示给对方' })
@@ -1460,10 +1458,10 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       persistSettings()
     })
 
-    const startBtn = h('button', { class: 'frp-btn pri', text: '开始发放（实打款）' })
+    const startBtn = h('button', { class: 'frp-btn pri', text: '开始发放' })
     startBtn.disabled = !canStart
     startBtn.addEventListener('click', () => confirmStart('live'))
-    const dryBtn = h('button', { class: 'frp-btn acc', text: '演练模式（不扣款）' })
+    const dryBtn = h('button', { class: 'frp-btn acc', text: '演练模式' })
     dryBtn.disabled = !incl.length || zero > 0 || hasUnknownRows() || run.active
     dryBtn.addEventListener('click', () => confirmStart('dry'))
 
@@ -1483,7 +1481,6 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
           dryBtn,
           startBtn,
         ),
-        h('div', { class: 'frp-hint', text: '打款即时到账、不可撤销。每笔使用独立幂等单号：失败重试复用原单号；网络异常不会自动重发，必须查单对账后定性。' }),
       ),
     )
 
@@ -1512,14 +1509,14 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       h(
         'div',
         { class: 'frp-modal' },
-        h('h3', { text: mode === 'dry' ? '演练模式确认' : '确认发放红包' }),
+        h('h3', { text: mode === 'dry' ? '演练模式确认' : '确认发放' }),
         h('div', { class: 'frp-kv' }, h('span', { text: '发放人数' }), h('b', { text: `${incl.length} 人` })),
         h('div', { class: 'frp-kv' }, h('span', { text: '合计金额' }), h('b', { text: `${fmtCents(total)} LDC` })),
         h('div', { class: 'frp-kv' }, h('span', { text: '转账备注' }), h('b', { text: state.settings.remark || '（空）' })),
         h('div', { class: 'frp-kv' }, h('span', { text: '打款账户' }), h('b', { text: mode === 'dry' ? '演练（不扣款）' : '商户 ' + maskPid(state.cred ? state.cred.clientId : '') })),
         h(
           'div',
-          { class: 'frp-msg warn', text: mode === 'dry' ? '演练模式不会产生任何网络请求与扣款，仅模拟流程与界面。' : '资金将从你的商户账户即时转出且不可撤销。请核对人数与总额；发放后如需补发请使用失败重试（单号复用）。' },
+          { class: 'frp-msg warn', text: mode === 'dry' ? '演练模式不产生任何网络请求与扣款。' : '资金即时转出且不可撤销，请核对人数与总额。' },
         ),
         h('label', { class: 'frp-chk' }, chk, h('span', { text: '我已核对名单、额度与总额' })),
         h('div', { class: 'acts' }, h('button', { class: 'frp-btn', text: '取消', onclick: () => modal.remove() }), confirmBtn),
@@ -1587,7 +1584,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
         acts.appendChild(stopBtn)
       } else {
         if (resumableRows(batch).length) {
-          const resumeBtn = h('button', { class: 'frp-btn sm acc', text: `继续发放（${resumableRows(batch).length} 笔，复用原单号）` })
+          const resumeBtn = h('button', { class: 'frp-btn sm acc', text: `继续发放（${resumableRows(batch).length}）` })
           resumeBtn.addEventListener('click', () => runBatch(batch.id))
           acts.appendChild(resumeBtn)
         }
@@ -1687,18 +1684,18 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
     const clearBtn = h('button', { class: 'frp-btn sm danger', text: '清空审计数据' })
     clearBtn.addEventListener('click', confirmClearAudit)
     sec.appendChild(
-      h('div', { class: 'frp-row', style: 'margin-bottom:12px' }, h('h3', { text: '审计', style: 'margin:0;font-size:15px' }), h('div', { class: 'frp-grow' }), exportAllBtn, clearBtn),
+      h('div', { class: 'frp-row', style: 'margin-bottom:12px' }, h('div', { class: 'frp-grow' }), exportAllBtn, clearBtn),
     )
 
     // 批次列表（新→旧）
     if (!state.batches.length) {
-      sec.appendChild(h('div', { class: 'frp-hint', text: '暂无批次。每次发放都会在这里留下完整记录：名单快照、单号、交易号、结果与事件流水。' }))
+      sec.appendChild(h('div', { class: 'frp-hint', text: '暂无批次' }))
     }
     for (const batch of state.batches.slice(0, 10)) {
       sec.appendChild(renderAuditBatch(batch))
     }
     if (state.batches.length > 10) {
-      sec.appendChild(h('div', { class: 'frp-hint', text: `仅展示最近 10 个批次（共 ${state.batches.length}），更多请导出全部审计。` }))
+      sec.appendChild(h('div', { class: 'frp-hint', text: `仅展示最近 10 个批次（共 ${state.batches.length}）` }))
     }
 
     // 操作日志
@@ -1751,7 +1748,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
     acts.appendChild(js)
     const del = h('button', { class: 'frp-btn sm danger', text: '删除该批次记录' })
     del.addEventListener('click', () => {
-      uiConfirm('删除批次记录', `仅删除本机审计记录 ${batch.id}，不影响已发生的资金流转。确定删除？`, () => {
+      uiConfirm('删除批次记录', `仅删除本机审计记录 ${batch.id}，不影响资金流转。确定删除？`, () => {
         state.batches = state.batches.filter((b) => b.id !== batch.id)
         persistBatches()
         logOp('batch.delete', `删除批次审计记录 ${batch.id}`)
@@ -1803,7 +1800,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
   function confirmClearAudit() {
     uiConfirm(
       '清空审计数据',
-      `将删除本机全部 ${state.batches.length} 个批次记录与 ${state.oplog.length} 条操作日志。若尚未导出，这些记录将无法找回。资金本身不受影响。`,
+      `将删除本机全部 ${state.batches.length} 个批次记录与 ${state.oplog.length} 条操作日志，删除后无法找回。`,
       () => {
         state.batches = []
         state.oplog = []
@@ -1829,7 +1826,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       unlockBtn.addEventListener('click', uiUnlockCred)
       const forgetBtn = h('button', { class: 'frp-btn danger', text: '删除已记住的密钥' })
       forgetBtn.addEventListener('click', () => {
-        uiConfirm('删除已记住的密钥', '将从本机删除加密存储的密钥（不影响 credit 账户本身）。', () => {
+        uiConfirm('删除已记住的密钥', '将从本机删除加密存储的密钥。', () => {
           GM_deleteValue(K_CRED_ENC)
           state.credEnc = null
           logOp('cred.forget', '删除本机加密存储的密钥')
@@ -1841,7 +1838,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
           'div',
           { class: 'frp-card' },
           h('h3', { text: '加密锁定的密钥' }),
-          h('div', { class: 'frp-hint', text: `本机存有一份口令加密的密钥（商户 ${state.credEnc.pidMask || '—'}）。解锁后可用于发放；也可直接删除。` }),
+          h('div', { class: 'frp-hint', text: `本机存有口令加密的密钥（商户 ${state.credEnc.pidMask || '—'}）` }),
           h('div', { class: 'frp-row' }, unlockBtn, forgetBtn),
         ),
       )
@@ -1861,7 +1858,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
 
     const msgBox = h('div')
 
-    const verifyBtn = h('button', { class: 'frp-btn acc', text: '校验密钥（零成本，不扣款）' })
+    const verifyBtn = h('button', { class: 'frp-btn acc', text: '校验密钥' })
     verifyBtn.addEventListener('click', async () => {
       msgBox.replaceChildren(h('div', { class: 'frp-hint', text: '校验中…' }))
       const cid = pidInput.value.trim()
@@ -1871,7 +1868,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       logOp('cred.verify', `${res.ok ? '密钥校验通过' : '密钥校验失败'}：${res.msg}（商户 ${maskPid(cid)}）`)
     })
 
-    const saveBtn = h('button', { class: 'frp-btn pri', text: '保存到本次会话（仅内存）' })
+    const saveBtn = h('button', { class: 'frp-btn pri', text: '保存到本次会话' })
     saveBtn.addEventListener('click', () => {
       const cid = pidInput.value.trim()
       const cs = secInput.value.trim()
@@ -1894,7 +1891,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
         msgBox.replaceChildren(h('div', { class: 'frp-msg err', text: '请先在上方填写有效的 client_id / client_secret' }))
         return
       }
-      const pass = await uiPrompt('设置加密口令', '口令（≥8 位，用于加密密钥；遗忘则无法恢复，只能删除重配）', 'password')
+      const pass = await uiPrompt('设置加密口令', '口令（≥8 位，遗忘则无法恢复）', 'password')
       if (!pass) return
       if (pass.length < 8) {
         toast('口令至少 8 位', 'error')
@@ -1926,57 +1923,15 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
         })
       })
 
-    const cur = state.cred
     sec.appendChild(
       h(
         'div',
         { class: 'frp-card' },
         h('h3', { text: 'credit.linux.do 商户密钥' }),
-        h(
-          'div',
-          { class: 'frp-hint' },
-          '打款使用你自己的商户 API 密钥（在 ',
-          h('code', { text: 'credit.linux.do' }),
-          ' 用户中心创建），资金从该密钥所属账户直接转入目标用户，本工具不经手、不上传、不落明文。当前状态：',
-          h('b', { text: cur ? `会话内已配置（商户 ${maskPid(cur.clientId)}）` : state.credEnc ? '已加密锁定，可解锁或重新配置' : '未配置' }),
-        ),
         h('div', { class: 'frp-row', style: 'margin:10px 0 4px' }, h('span', { class: 'frp-hint', text: 'client_id' }), pidInput),
         h('div', { class: 'frp-row', style: 'margin:4px 0 4px' }, h('span', { class: 'frp-hint', text: 'client_secret' }), secInput, showBtn),
         h('div', { class: 'frp-row', style: 'margin-top:10px' }, verifyBtn, saveBtn, encBtn, forgetBtn2),
         msgBox,
-        h(
-          'div',
-          { class: 'frp-hint', style: 'margin-top:8px' },
-          '· 「校验」通过查一个不存在的单号验证密钥，零成本、不扣款；',
-          h('br'),
-          '· 「仅内存」= 刷新页面即消失，最安全；「加密记住」= PBKDF2-SHA256(310k) 派生密钥 + AES-256-GCM 加密后存入脚本沙箱，重启浏览器后点「解锁」即可；',
-          h('br'),
-          '· 密钥只会被发送到 ',
-          h('code', { text: 'https://credit.linux.do' }),
-          '（Tampermonkey @connect 白名单强制），本工具不包含任何其他网络出口，也不加载任何外部脚本/样式/头像。',
-        ),
-      ),
-    )
-
-    // 接口信息（可审计）
-    sec.appendChild(
-      h(
-        'div',
-        { class: 'frp-card' },
-        h('h3', { text: '网络出口清单（可审计）' }),
-        h('div', { class: 'frp-hint' },
-          h('code', { text: 'POST ' + LDC_BASE + DISTRIBUTE_PATH }), ' —— 批量打款（Basic Auth）；',
-          h('br'),
-          h('code', { text: 'GET  ' + LDC_BASE + QUERY_PATH }), ' —— 密钥校验与查单对账；',
-          h('br'),
-          h('code', { text: 'GET  https://linux.do/my/follow/followers.json' }), ' —— 拉取你自己的粉丝名单（同源请求，仅使用你当前登录会话，自动翻页）；',
-          h('br'),
-          h('code', { text: 'GET  https://linux.do/u/:username.json' }), ' —— 按用户名查询用户的 id / username / name（同源，查询添加功能）；',
-          h('br'),
-          h('code', { text: 'IMG  linux.do/user_avatar/… 或 cdn*.ldstatic.com' }), ' —— 用户头像图片（仅 <img> 展示，加载失败自动回退本机色块，不发其他请求）。',
-          h('br'),
-          '除上述出口外无任何其他网络请求：无统计、无字体/样式外链。名单、额度、批次与日志全部保存在本机脚本沙箱（GM 存储），可随时导出或清空。',
-        ),
       ),
     )
   }
@@ -2063,7 +2018,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
     })
     shadow.getElementById('frp-clearroster').addEventListener('click', () => {
       if (!state.roster.users.length) return
-      uiConfirm('清空名单', '仅清空本机名单与已设额度，不影响已发放的批次审计记录。', () => {
+      uiConfirm('清空名单', '将清空本机名单与已设额度。', () => {
         state.roster = { importedAt: 0, users: [] }
         persistRoster()
         logOp('roster.clear', '清空名单')
