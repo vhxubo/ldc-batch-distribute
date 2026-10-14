@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LDC 批量分发
 // @namespace    vhxubo.ldc.batch-distribute
-// @version      1.4.0
+// @version      1.5.0
 // @description  名单来源自由：粘贴 id/username JSON（含整份 /u/用户名.json）、按用户名查询添加、快捷键 Alt+F 一键拉取我的粉丝；展示头像与信任等级 → 统一/单独设置额度 → 通过 credit.linux.do 商户密钥批量打款。无后端、无数据库：数据全部存本机浏览器，除 LDC 支付接口与 linux.do 同源接口外不发任何网络请求，发放全程留痕可审计、可导出。
 // @author       vhxubo
 // @license      MIT
@@ -61,7 +61,7 @@
   const LDC_BASE = 'https://credit.linux.do'
   const QUERY_PATH = '/epay/api.php'
   const DISTRIBUTE_PATH = '/lpay/distribute'
-  const VERSION = '1.4.0'
+  const VERSION = '1.5.0'
   const REQUEST_TIMEOUT_MS = 30_000
   const MAX_BODY = 1 << 20
   const PBKDF2_ITERATIONS = 310_000
@@ -192,6 +192,12 @@
     credEnc: loadJSON(K_CRED_ENC, null), // {v,salt,iv,ct,pidMask} 口令加密的密钥
     cred: null, // {clientId,clientSecret} 仅内存，刷新即失
     ui: { tab: 'roster', search: '', currentBatchId: null, credShow: false },
+  }
+  // v1.5.0 移除演练模式：历史演练批次无真实单据，保留会有「失败重试→实发」与待对账永久阻塞风险，启动时清除并留痕
+  if (state.batches.some((b) => b.mode === 'dry')) {
+    const n = state.batches.filter((b) => b.mode === 'dry').length
+    state.batches = state.batches.filter((b) => b.mode !== 'dry')
+    logOp('batch.dry.purge', `演练模式已移除，清除 ${n} 个历史演练批次（模拟数据，无真实打款）`)
   }
   // 页面刷新会中断进行中的批次：running 一律归档为 paused（未知单在，等待对账/继续）
   for (const b of state.batches) {
@@ -655,18 +661,17 @@
   }
 
   /** 创建批次：冻结名单快照并先行落盘（单号先于任何请求存在） */
-  function createBatch(mode) {
+  function createBatch() {
     const users = state.roster.users.filter((u) => u.included)
     const batchId = newBatchId()
     const batch = {
       id: batchId,
-      mode, // 'live' | 'dry'
       status: 'running',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       finishedAt: 0,
       remark: state.settings.remark,
-      pid: state.cred ? state.cred.clientId : '(演练)',
+      pid: state.cred ? state.cred.clientId : '',
       rows: users.map((u, i) => ({
         id: u.id,
         username: u.username,
@@ -684,10 +689,7 @@
         {
           t: Date.now(),
           type: 'batch.start',
-          text:
-            mode === 'dry'
-              ? `创建演练批次：${users.length} 人，合计 ${fmtCents(users.reduce((s, u) => s + u.amountCents, 0))} LDC（不实际打款）`
-              : `创建批次：${users.length} 人，合计 ${fmtCents(users.reduce((s, u) => s + u.amountCents, 0))} LDC，商户 ${maskPid(state.cred.clientId)}`,
+          text: `创建批次：${users.length} 人，合计 ${fmtCents(users.reduce((s, u) => s + u.amountCents, 0))} LDC，商户 ${maskPid(state.cred.clientId)}`,
         },
       ],
     }
@@ -712,7 +714,7 @@
       toast('该批次没有待发放的记录', 'warn')
       return
     }
-    if (batch.mode === 'live' && !state.cred) {
+    if (!state.cred) {
       toast('请先在「密钥设置」中配置并校验密钥', 'error')
       switchTab('cred')
       return
@@ -749,25 +751,6 @@
     row.error = ''
     persistBatches()
     renderAll()
-
-    if (batch.mode === 'dry') {
-      // 演练模式：不发任何网络请求，本地模拟结果（含个别失败/待对账，便于预览界面）
-      await sleep(60 + Math.random() * 140)
-      if (/fail/i.test(row.username)) {
-        row.status = 'failed'
-        row.error = '演练：模拟打款失败'
-      } else if (/unknown/i.test(row.username)) {
-        row.status = 'unknown'
-        row.error = '演练：模拟网络异常（状态未知）'
-      } else {
-        row.status = 'success'
-        row.tradeNo = 'DRY' + randStr(12)
-      }
-      row.finishedAt = Date.now()
-      persistBatches()
-      renderAll()
-      return
-    }
 
     const cred = state.cred
     if (!cred) {
@@ -834,15 +817,6 @@
   }
 
   async function reconcileRow(batch, row) {
-    if (batch.mode === 'dry') {
-      // 演练批次没有真实单据，直接定性为「确认未落地」
-      row.status = 'failed'
-      row.error = '演练：查单确认未落地（模拟）'
-      batchEvent(batch, 'row.reconcile', `演练批次 ${row.username}（${row.id}）对账定性为失败（可重试）`)
-      persistBatches()
-      renderAll()
-      return true
-    }
     if (!state.cred) {
       toast('请先解锁/配置密钥后再对账', 'error')
       return false
@@ -902,14 +876,13 @@
   }
 
   function exportBatchCsv(batch) {
-    const head = ['时间', '批次ID', '模式', '状态', '用户ID', '用户名', '昵称', '金额LDC', '商户单号', 'LDC交易号', '错误信息']
+    const head = ['时间', '批次ID', '状态', '用户ID', '用户名', '昵称', '金额LDC', '商户单号', 'LDC交易号', '错误信息']
     const lines = [head.map(csvCell).join(',')]
     for (const r of batch.rows) {
       lines.push(
         [
           fmtTime(r.finishedAt || batch.updatedAt),
           batch.id,
-          batch.mode === 'dry' ? '演练' : '实发',
           STATUS_TEXT[r.status] || r.status,
           r.id,
           r.username,
@@ -1020,11 +993,22 @@ table.frp td.num{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12p
 .frp-oplog time{color:var(--muted);flex:none;font-family:ui-monospace,Menlo,monospace}
 .frp-x{color:var(--muted);cursor:pointer;border:none;background:none;font-size:14px;padding:2px 6px;border-radius:6px}
 .frp-x:hover{color:var(--err);background:var(--card)}
-.frp-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.6);display:flex;align-items:center;justify-content:center;padding:16px;z-index:2147483647}
-.frp-modal{background:var(--bg);color:var(--fg);border-radius:12px;max-width:520px;width:100%;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.4);max-height:85vh;overflow:auto}
-.frp-modal h3{margin:0 0 10px;font-size:16px}
+.frp-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:2147483647;animation:frp-fade .14s ease}
+.frp-modal{background:var(--bg);color:var(--fg);border-radius:14px;max-width:440px;width:100%;padding:18px 20px;box-shadow:0 24px 70px rgba(0,0,0,.45);max-height:85vh;overflow:auto;animation:frp-pop .16s ease}
+@keyframes frp-fade{from{opacity:0}}
+@keyframes frp-pop{from{opacity:0;transform:scale(.96) translateY(6px)}}
+@media (prefers-reduced-motion:reduce){.frp-modal-bg,.frp-modal{animation:none}}
+.frp-modal h3{margin:0 0 10px;font-size:16px;display:flex;align-items:center;gap:9px}
+.frp-ico{width:30px;height:30px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;flex:none}
+.frp-ico.warn{background:color-mix(in srgb,var(--err) 12%,transparent);color:var(--err)}
+.frp-ico.info{background:color-mix(in srgb,var(--acc) 12%,transparent);color:var(--acc)}
+.frp-modal .kvbox{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:2px 12px;margin:10px 0}
 .frp-modal .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
-.frp-kv{display:flex;justify-content:space-between;gap:12px;padding:5px 0;font-size:13px;border-bottom:1px dashed var(--line)}
+.frp-modal .acts .frp-btn{min-width:76px}
+.frp-modal label.frp-chk{display:flex;margin:2px 0 0}
+.frp-kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;font-size:13px;border-bottom:1px dashed var(--line)}
+.frp-btn.dangersolid{background:var(--err);border-color:var(--err);color:#fff;font-weight:600}
+.frp-btn.dangersolid:hover:not(:disabled){background:#b91c1c}
 .frp-kv:last-of-type{border-bottom:none}
 .frp-kv b{text-align:right}
 .frp-toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%);background:#1e293b;color:#f8fafc;font-size:13px;padding:9px 16px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:2147483647;max-width:80vw}
@@ -1460,10 +1444,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
 
     const startBtn = h('button', { class: 'frp-btn pri', text: '开始发放' })
     startBtn.disabled = !canStart
-    startBtn.addEventListener('click', () => confirmStart('live'))
-    const dryBtn = h('button', { class: 'frp-btn acc', text: '演练模式' })
-    dryBtn.disabled = !incl.length || zero > 0 || hasUnknownRows() || run.active
-    dryBtn.addEventListener('click', () => confirmStart('dry'))
+    startBtn.addEventListener('click', () => confirmStart())
 
     sec.appendChild(
       h(
@@ -1478,7 +1459,6 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
           remarkInput,
           concSel,
           h('div', { class: 'frp-grow' }),
-          dryBtn,
           startBtn,
         ),
       ),
@@ -1488,47 +1468,39 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
     if (batch) sec.appendChild(renderBatchCard(batch, true))
   }
 
-  function confirmStart(mode) {
+  function confirmStart() {
     const { incl, total } = rosterSummary()
-    const modal = h('div', { class: 'frp-modal-bg' })
+    // 资金确认弹窗不允许点蒙版关闭，必须显式做出选择（Esc 视为取消）
+    const { bg, close } = openModal({ backdropClose: false })
     const chk = h('input', { type: 'checkbox' })
-    const confirmBtn = h('button', {
-      class: 'frp-btn ' + (mode === 'dry' ? 'acc' : 'pri'),
-      text: mode === 'dry' ? '开始演练' : '确认发放',
-    })
+    const confirmBtn = h('button', { class: 'frp-btn pri', text: '确认发放' })
     confirmBtn.disabled = true
     chk.addEventListener('change', () => (confirmBtn.disabled = !chk.checked))
     confirmBtn.addEventListener('click', () => {
-      modal.remove()
-      const batch = createBatch(mode)
-      logOp(mode === 'dry' ? 'batch.dry.start' : 'batch.live.start', `${mode === 'dry' ? '演练' : '实发'}批次 ${batch.id} 开始：${batch.rows.length} 人 / ${fmtCents(batch.rows.reduce((s, r) => s + r.amountCents, 0))} LDC`)
+      close()
+      const batch = createBatch()
+      logOp('batch.live.start', `实发批次 ${batch.id} 开始：${batch.rows.length} 人 / ${fmtCents(batch.rows.reduce((s, r) => s + r.amountCents, 0))} LDC`)
       switchTab('run')
       runBatch(batch.id)
     })
-    modal.appendChild(
+    bg.appendChild(
       h(
         'div',
         { class: 'frp-modal' },
-        h('h3', { text: mode === 'dry' ? '演练模式确认' : '确认发放' }),
-        h('div', { class: 'frp-kv' }, h('span', { text: '发放人数' }), h('b', { text: `${incl.length} 人` })),
-        h('div', { class: 'frp-kv' }, h('span', { text: '合计金额' }), h('b', { text: `${fmtCents(total)} LDC` })),
-        h('div', { class: 'frp-kv' }, h('span', { text: '转账备注' }), h('b', { text: state.settings.remark || '（空）' })),
-        h('div', { class: 'frp-kv' }, h('span', { text: '打款账户' }), h('b', { text: mode === 'dry' ? '演练（不扣款）' : '商户 ' + maskPid(state.cred ? state.cred.clientId : '') })),
+        h('h3', null, h('span', { class: 'frp-ico warn', text: '¥' }), h('span', { text: '确认发放' })),
         h(
           'div',
-          { class: 'frp-msg warn', text: mode === 'dry' ? '演练模式不产生任何网络请求与扣款。' : '资金即时转出且不可撤销，请核对人数与总额。' },
+          { class: 'kvbox' },
+          h('div', { class: 'frp-kv' }, h('span', { text: '发放人数' }), h('b', { text: `${incl.length} 人` })),
+          h('div', { class: 'frp-kv' }, h('span', { text: '合计金额' }), h('b', { text: `${fmtCents(total)} LDC` })),
+          h('div', { class: 'frp-kv' }, h('span', { text: '转账备注' }), h('b', { text: state.settings.remark || '（空）' })),
+          h('div', { class: 'frp-kv' }, h('span', { text: '打款账户' }), h('b', { text: '商户 ' + maskPid(state.cred ? state.cred.clientId : '') })),
         ),
+        h('div', { class: 'frp-msg warn', text: '资金即时转出且不可撤销，请核对人数与总额。' }),
         h('label', { class: 'frp-chk' }, chk, h('span', { text: '我已核对名单、额度与总额' })),
-        h('div', { class: 'acts' }, h('button', { class: 'frp-btn', text: '取消', onclick: () => modal.remove() }), confirmBtn),
+        h('div', { class: 'acts' }, h('button', { class: 'frp-btn', text: '取消', onclick: () => close() }), confirmBtn),
       ),
     )
-    shadow.appendChild(modal)
-    // 阻止点击遮罩误关确认框
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        /* 故意不关闭：防误触 */
-      }
-    })
   }
 
   function statLine(batch) {
@@ -1548,7 +1520,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       h(
         'div',
         { class: 'frp-row' },
-        h('h3', { text: `批次 ${batch.id}（${batch.mode === 'dry' ? '演练' : '实发'} · ${STATUS_BATCH[batch.status] || batch.status}）` }),
+        h('h3', { text: `批次 ${batch.id}（${STATUS_BATCH[batch.status] || batch.status}）` }),
         h('div', { class: 'frp-grow' }),
         h('span', { class: 'frp-hint', text: `备注：${batch.remark || '（空）'} · 商户 ${typeof batch.pid === 'string' ? maskPid(batch.pid) : '—'}` }),
       ),
@@ -1718,7 +1690,6 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       h('span', null, h('b', { text: `${fmtCents(totalCents)} LDC` }), h('span', { text: ` · ${batch.rows.length} 人 · ${STATUS_BATCH[batch.status] || batch.status}` })),
       h('span', { class: 'tid', text: batch.id }),
       h('span', { class: 'tid', text: fmtTime(batch.createdAt) }),
-      h('span', { class: 'frp-badge ' + (batch.mode === 'dry' ? 'b-pending' : 'b-sending'), text: batch.mode === 'dry' ? '演练' : '实发' }),
       c.unknown ? h('span', { class: 'frp-badge b-unknown', text: `待对账 ${c.unknown}` }) : null,
       c.failed ? h('span', { class: 'frp-badge b-failed', text: `失败 ${c.failed}` }) : null,
     )
@@ -1950,46 +1921,81 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
     }
   }
 
-  // ---------- 通用确认 / 输入弹窗 ----------
+  // ---------- 通用弹窗骨架 / 确认 / 输入弹窗 ----------
+
+  const modalStack = []
+
+  /**
+   * 弹窗统一骨架：统一蒙版与关闭行为（Esc / 点蒙版），并维护栈序保证 Esc 只关最上层。
+   * backdropClose=false 用于资金确认类弹窗：必须点按钮做出选择，防点蒙版误触。
+   */
+  function openModal({ backdropClose = true, onDismiss } = {}) {
+    const bg = h('div', { class: 'frp-modal-bg' })
+    const entry = { bg }
+    const close = () => {
+      const i = modalStack.indexOf(entry)
+      if (i >= 0) modalStack.splice(i, 1)
+      bg.remove()
+    }
+    const dismiss = () => {
+      if (onDismiss) onDismiss()
+      close()
+    }
+    entry.dismiss = dismiss
+    if (backdropClose) {
+      bg.addEventListener('click', (e) => {
+        if (e.target === bg) dismiss()
+      })
+    }
+    modalStack.push(entry)
+    shadow.appendChild(bg)
+    return { bg, close, dismiss }
+  }
 
   function uiConfirm(title, text, onOk, okText) {
-    const modal = h('div', { class: 'frp-modal-bg' })
-    const ok = h('button', { class: 'frp-btn danger', text: okText || '确定' })
+    const { bg, close } = openModal()
+    const ok = h('button', { class: 'frp-btn dangersolid', text: okText || '确定' })
     ok.addEventListener('click', () => {
-      modal.remove()
+      close()
       onOk()
     })
-    modal.appendChild(
+    bg.appendChild(
       h(
         'div',
         { class: 'frp-modal' },
-        h('h3', { text: title }),
+        h('h3', null, h('span', { class: 'frp-ico warn', text: '!' }), h('span', { text: title })),
         h('div', { class: 'frp-hint', text }),
-        h('div', { class: 'acts' }, h('button', { class: 'frp-btn', text: '取消', onclick: () => modal.remove() }), ok),
+        h('div', { class: 'acts' }, h('button', { class: 'frp-btn', text: '取消', onclick: () => close() }), ok),
       ),
     )
-    shadow.appendChild(modal)
   }
 
   function uiPrompt(title, label, type) {
     return new Promise((resolve) => {
-      const modal = h('div', { class: 'frp-modal-bg' })
+      let done
+      const { bg, close } = openModal({ onDismiss: () => done(null) })
+      done = (v) => {
+        resolve(v)
+        close()
+      }
       const input = h('input', { class: 'frp-input', style: 'width:100%', type: type || 'text' })
       const ok = h('button', { class: 'frp-btn pri', text: '确定' })
       const cancel = h('button', { class: 'frp-btn', text: '取消' })
-      ok.addEventListener('click', () => {
-        modal.remove()
-        resolve(input.value)
-      })
-      cancel.addEventListener('click', () => {
-        modal.remove()
-        resolve(null)
-      })
+      ok.addEventListener('click', () => done(input.value))
+      cancel.addEventListener('click', () => done(null))
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') ok.click()
       })
-      modal.appendChild(h('div', { class: 'frp-modal' }, h('h3', { text: title }), h('div', { class: 'frp-hint', text: label }), input, h('div', { class: 'acts' }, cancel, ok)))
-      shadow.appendChild(modal)
+      bg.appendChild(
+        h(
+          'div',
+          { class: 'frp-modal' },
+          h('h3', null, h('span', { class: 'frp-ico info', text: '?' }), h('span', { text: title })),
+          h('div', { class: 'frp-hint', text: label }),
+          input,
+          h('div', { class: 'acts' }, cancel, ok),
+        ),
+      )
       setTimeout(() => input.focus(), 30)
     })
   }
@@ -2087,6 +2093,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       toast('批次进行中，请先暂停/停止', 'warn')
       return
     }
+    modalStack.length = 0
     if (host) host.remove()
     host = null
     shadow = null
@@ -2231,6 +2238,23 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
       e.preventDefault()
       e.stopPropagation()
       fetchMyFollowers()
+    },
+    true,
+  )
+
+  // Esc：依次关闭最上层弹窗（点蒙版同等语义）；无弹窗时关闭面板（批次进行中不关，与点蒙版一致）
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key !== 'Escape') return
+      const top = modalStack[modalStack.length - 1]
+      if (top) {
+        e.preventDefault()
+        e.stopPropagation()
+        top.dismiss()
+        return
+      }
+      if (host && !run.active) closeUI()
     },
     true,
   )

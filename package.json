@@ -1,6 +1,6 @@
 {
   "name": "ldc-batch-distribute",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "description": "LDC 批量分发：Tampermonkey 用户脚本，纯前端批量打款，无后端无数据库，数据存本机",
   "main": "ldc-batch-distribute.user.js",

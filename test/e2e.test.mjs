@@ -151,14 +151,14 @@ async function saveSessionCred(T, pid = 'goodpid', secret = 'goodsecret') {
   T.btnIn('保存到本次会话').click()
 }
 
-async function startBatch(T, mode) {
+async function startBatch(T) {
   T.tab('run').click()
-  T.btnIn(mode === 'dry' ? '演练模式' : '开始发放').click()
+  T.btnIn('开始发放').click()
   const modal = T.root().querySelector('.frp-modal-bg')
   const chk = modal.querySelector('input[type=checkbox]')
   chk.click()
   chk.dispatchEvent(new T.w.Event('change', { bubbles: true }))
-  T.btn(mode === 'dry' ? '开始演练' : '确认发放', modal).click()
+  T.btn('确认发放', modal).click()
 }
 
 const results = []
@@ -242,33 +242,6 @@ const testVerifyBadKey = check('密钥校验：错误密钥提示、正确密钥
   T.dom.window.close()
 })
 
-const testDryRun = check('演练模式：成功/失败/待对账模拟，且不发出任何网络请求', async () => {
-  const T = makeWorld()
-  T.open()
-  T.tab('roster').click()
-  await importRoster(T, USERS_JSON_LIVE)
-  T.id('frp-uniform').value = '0.10'
-  T.btn('应用到已勾选').click()
-  await startBatch(T, 'dry')
-  await until(() => {
-    const b = T.batches()[0]
-    return b && ['done', 'paused', 'stopped'].includes(b.status)
-  }, 15000)
-  const b = T.batches()[0]
-  assert.equal(b.mode, 'dry')
-  const by = Object.fromEntries(b.rows.map((r) => [r.username, r.status]))
-  assert.equal(by['vhxubo'], 'success', 'vhxubo 成功')
-  assert.equal(by['vhxubo-fail'], 'failed', 'vhxubo-fail 模拟失败')
-  assert.equal(by['vhxubo-unknown'], 'unknown', 'vhxubo-unknown 模拟待对账')
-  assert.equal(by['vhxubo-rich'], 'success', 'vhxubo-rich 成功')
-  assert.equal(T.netlog.length, 0, '演练零网络请求，实际: ' + JSON.stringify(T.netlog))
-  // 演练批次对账 → 定性为失败
-  T.tab('audit').click()
-  T.btnIn('查单对账').click()
-  await until(() => T.batches()[0].rows.every((r) => r.status !== 'unknown'), 6000)
-  T.dom.window.close()
-})
-
 const testLiveRun = check('实发 mock：成功/业务失败/状态未知 + 查单找回 + 失败重试复用单号', async () => {
   const T = makeWorld()
   T.open()
@@ -277,12 +250,11 @@ const testLiveRun = check('实发 mock：成功/业务失败/状态未知 + 查�
   await importRoster(T, USERS_JSON_LIVE)
   T.id('frp-uniform').value = '0.10'
   T.btn('应用到已勾选').click()
-  await startBatch(T, 'live')
+  await startBatch(T)
 
   // 幂等单号先于请求落库：批次创建时 5 行都应有单号（轮询第一刻即查）
   await until(() => T.batches().length > 0, 3000)
   const b0 = T.batches()[0]
-  assert.equal(b0.mode, 'live')
   assert.ok(b0.rows.every((r) => /^FRP[0-9A-Za-z]+$/.test(r.outTradeNo)), '单号格式 FRP…')
 
   await until(() => ['done', 'paused', 'stopped'].includes(T.batches()[0].status), 20000)
@@ -411,7 +383,7 @@ const testAuditExportClear = check('审计：批次明细/操作日志/导出/�
   await importRoster(T, JSON.stringify([{ id: 76303, username: 'vhxubo', name: '归谜' }]))
   T.id('frp-uniform').value = '0.05'
   T.btn('应用到已勾选').click()
-  await startBatch(T, 'live')
+  await startBatch(T)
   await until(() => ['done', 'paused'].includes(T.batches()[0].status), 12000)
   T.tab('audit').click()
   assert.ok(T.id('frp-sec-audit').textContent.includes('vhxubo'), '批次明细含用户')
@@ -437,7 +409,7 @@ const testUnknownBlocksNewBatch = check('存在待对账记录时禁止开新批
   await importRoster(T, USERS_JSON_LIVE)
   T.id('frp-uniform').value = '0.10'
   T.btn('应用到已勾选').click()
-  await startBatch(T, 'live')
+  await startBatch(T)
   await until(() => T.batches()[0].rows.some((r) => r.status === 'unknown'), 20000)
   await until(() => T.batches()[0].status !== 'running', 20000)
   T.tab('run').click()
@@ -470,7 +442,6 @@ const tests = [
   ['导入与额度', testImportAndQuota],
   ['弹窗层级', testModalLayering],
   ['密钥校验', testVerifyBadKey],
-  ['演练模式', testDryRun],
   ['实发与对账', testLiveRun],
   ['加密记住与解锁', testEncryptUnlock],
   ['中断恢复', testInterruptedRecovery],
