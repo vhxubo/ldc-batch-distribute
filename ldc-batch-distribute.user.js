@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LDC 批量分发
 // @namespace    vhxubo.ldc.batch-distribute
-// @version      1.3.0
+// @version      1.3.1
 // @description  名单来源自由：粘贴 id/username JSON（含整份 /u/用户名.json）、按用户名查询添加、快捷键 Alt+F 一键拉取我的粉丝；展示头像与信任等级 → 统一/单独设置额度 → 通过 credit.linux.do 商户密钥批量打款。无后端、无数据库：数据全部存本机浏览器，除 LDC 支付接口与 linux.do 同源接口外不发任何网络请求，发放全程留痕可审计、可导出。
 // @author       vhxubo
 // @license      MIT
@@ -61,7 +61,7 @@
   const LDC_BASE = 'https://credit.linux.do'
   const QUERY_PATH = '/epay/api.php'
   const DISTRIBUTE_PATH = '/lpay/distribute'
-  const VERSION = '1.3.0'
+  const VERSION = '1.3.1'
   const REQUEST_TIMEOUT_MS = 30_000
   const MAX_BODY = 1 << 20
   const PBKDF2_ITERATIONS = 310_000
@@ -948,7 +948,8 @@
   const CSS = `
 :host{all:initial}
 *,*::before,*::after{box-sizing:border-box}
-.frp-overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.55);display:flex;align-items:flex-start;justify-content:center;padding:20px 10px;overflow:auto;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+/* 层级约定：弹窗/toast(…647) > 主面板遮罩(…646) > 悬浮按钮(…645)，均远高于站点 UI；弹窗低于遮罩会被盖住且点击落到遮罩上会误关面板 */
+.frp-overlay{position:fixed;inset:0;z-index:2147483646;background:rgba(15,23,42,.55);display:flex;align-items:flex-start;justify-content:center;padding:20px 10px;overflow:auto;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
 .frp-panel{--bg:#ffffff;--fg:#0f172a;--muted:#64748b;--line:#e2e8f0;--card:#f8fafc;--pri:#e11d48;--pri-h:#be123c;--acc:#2563eb;--ok:#16a34a;--warn:#d97706;--err:#dc2626;--inp:#ffffff;background:var(--bg);color:var(--fg);width:100%;max-width:1000px;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.35);display:flex;flex-direction:column;max-height:calc(100vh - 40px)}
 @media (prefers-color-scheme: dark){.frp-panel{--bg:#0f172a;--fg:#e2e8f0;--muted:#94a3b8;--line:#1e293b;--card:#1e293b;--acc:#3b82f6;--inp:#0b1222}}
 .frp-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line);flex:none}
@@ -1019,14 +1020,14 @@ table.frp td.num{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12p
 .frp-oplog time{color:var(--muted);flex:none;font-family:ui-monospace,Menlo,monospace}
 .frp-x{color:var(--muted);cursor:pointer;border:none;background:none;font-size:14px;padding:2px 6px;border-radius:6px}
 .frp-x:hover{color:var(--err);background:var(--card)}
-.frp-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.6);display:flex;align-items:center;justify-content:center;padding:16px;z-index:1}
+.frp-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.6);display:flex;align-items:center;justify-content:center;padding:16px;z-index:2147483647}
 .frp-modal{background:var(--bg);color:var(--fg);border-radius:12px;max-width:520px;width:100%;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.4);max-height:85vh;overflow:auto}
 .frp-modal h3{margin:0 0 10px;font-size:16px}
 .frp-modal .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 .frp-kv{display:flex;justify-content:space-between;gap:12px;padding:5px 0;font-size:13px;border-bottom:1px dashed var(--line)}
 .frp-kv:last-of-type{border-bottom:none}
 .frp-kv b{text-align:right}
-.frp-toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%);background:#1e293b;color:#f8fafc;font-size:13px;padding:9px 16px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:2;max-width:80vw}
+.frp-toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%);background:#1e293b;color:#f8fafc;font-size:13px;padding:9px 16px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:2147483647;max-width:80vw}
 .frp-toast.err{background:var(--err)}
 .frp-toast.warn{background:#b45309}
 .frp-toast.ok{background:var(--ok)}
@@ -2146,7 +2147,7 @@ label.frp-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;curs
   const LAUNCHER_CSS = `
 :host{all:initial}
 *,*::before,*::after{box-sizing:border-box}
-.frp-launch{position:fixed;right:16px;bottom:16px;z-index:2147483646;width:46px;height:46px;border-radius:50%;background:#e11d48;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;line-height:1;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35);user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .12s ease,box-shadow .12s ease;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.frp-launch{position:fixed;right:16px;bottom:16px;z-index:2147483645;width:46px;height:46px;border-radius:50%;background:#e11d48;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;line-height:1;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.35);user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .12s ease,box-shadow .12s ease;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 .frp-launch:hover{transform:scale(1.07);box-shadow:0 8px 26px rgba(0,0,0,.45)}
 .frp-launch.dragging{transition:none;opacity:.85;cursor:grabbing}
 .frp-launch-badge{position:absolute;top:-5px;right:-6px;min-width:20px;height:20px;border-radius:999px;background:#f59e0b;color:#fff;font-size:11px;font-weight:700;line-height:16px;text-align:center;padding:0 5px;border:2px solid #fff}

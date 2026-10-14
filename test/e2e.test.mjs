@@ -447,8 +447,28 @@ const testUnknownBlocksNewBatch = check('存在待对账记录时禁止开新批
   T.dom.window.close()
 })
 
+// 防回归：弹窗/toast 必须盖过主面板遮罩，悬浮按钮必须在其下（jsdom 不算层叠，这里静态断言 CSS 数值）
+const testModalLayering = check('弹窗层级：modal/toast > 面板遮罩 > 悬浮按钮', async () => {
+  const cssPanel = SOURCE.match(/const CSS = `([\s\S]*?)`/)[1]
+  const cssLauncher = SOURCE.match(/const LAUNCHER_CSS = `([\s\S]*?)`/)[1]
+  const zx = (css, sel) => {
+    const m = css.match(new RegExp(sel.replace('.', '\\.') + '\\{[^}]*?z-index:(\\d+)'))
+    assert.ok(m, sel + ' 存在 z-index')
+    return parseInt(m[1], 10)
+  }
+  const overlay = zx(cssPanel, '.frp-overlay')
+  const modal = zx(cssPanel, '.frp-modal-bg')
+  const toast = zx(cssPanel, '.frp-toast')
+  const launch = zx(cssLauncher, '.frp-launch')
+  assert.ok(modal > overlay, `确认弹窗(${modal}) 必须高于面板遮罩(${overlay})，否则弹窗被遮挡且点击会误关面板`)
+  assert.ok(toast > overlay, `面板内 toast(${toast}) 必须高于面板遮罩(${overlay})`)
+  assert.ok(overlay > launch, `面板遮罩(${overlay}) 应盖过悬浮按钮(${launch})`)
+  assert.ok(modal >= 2_000_000_000, `弹窗层级(${modal}) 应远高于站点 UI`)
+})
+
 const tests = [
   ['导入与额度', testImportAndQuota],
+  ['弹窗层级', testModalLayering],
   ['密钥校验', testVerifyBadKey],
   ['演练模式', testDryRun],
   ['实发与对账', testLiveRun],
