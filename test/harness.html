@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FRP 测试 Harness（GM stub + mock credit.linux.do）</title>
+<style>body{font-family:monospace;font-size:12px}#log{white-space:pre-wrap;background:#f6f8fa;padding:8px;border:1px solid #ddd}</style>
+</head>
+<body>
+<h3>测试 Harness：GM_* stub + 页面内 mock credit.linux.do（无真实网络）</h3>
+<div>
+  <p>mock 约定：</p>
+  <ul>
+    <li>有效密钥：<code>goodpid / goodsecret</code>；其他 → <code>商户信息不存在</code></li>
+    <li>username 含 <code>fail</code> → 打款返回 <code>余额不足</code>（业务失败）</li>
+    <li>username 含 <code>unknown</code> → 先记录单号再模拟断网（状态未知，可对账找回）</li>
+    <li>user_id = 999999 → <code>收款人不存在</code></li>
+    <li>其余 → 成功 <code>{code:1,data:{trade_no}}</code></li>
+  </ul>
+</div>
+<pre id="log">网络请求日志：</pre>
+<script>
+// ---------- GM_* stubs ----------
+const __store = {}
+window.__store = __store
+window.__netlog = []
+window.__processed = new Set() // 已在上游“落地”但响应丢失的单号
+window.__menuFns = []
+
+window.GM_setValue = (k, v) => { __store[k] = String(v) }
+window.GM_getValue = (k) => (k in __store ? __store[k] : undefined)
+window.GM_deleteValue = (k) => { delete __store[k] }
+window.GM_registerMenuCommand = (name, fn) => { window.__menuFns.push(fn) }
+
+const blog = (s) => {
+  const el = document.getElementById('log')
+  el.textContent += '\n' + s
+}
+window.GM_xmlhttpRequest = (opts) => {
+  window.__netlog.push(opts.method + ' ' + opts.url)
+  blog('→ ' + opts.method + ' ' + opts.url)
+  const respond = (status, text) =>
+    setTimeout(() => opts.onload && opts.onload({ status, responseText: text }), 30 + Math.random() * 80)
+  const netfail = () => setTimeout(() => opts.onerror && opts.onerror(new Error('mock network lost')), 40)
+  let u
+  try { u = new URL(opts.url) } catch { return netfail() }
+  if (u.origin !== 'https://credit.linux.do') {
+    return respond(400, '{"error_msg":"harness: unexpected origin"}')
+  }
+  if (u.pathname === '/epay/api.php') {
+    const pid = u.searchParams.get('pid')
+    const key = u.searchParams.get('key')
+    const otn = u.searchParams.get('out_trade_no') || ''
+    if (pid !== 'goodpid' || key !== 'goodsecret') {
+      return respond(200, JSON.stringify({ code: -1, msg: '商户信息不存在' }))
+    }
+    if (otn.startsWith('VERIFY')) return respond(200, JSON.stringify({ code: 0, msg: '订单不存在或已完成' }))
+    if (window.__processed.has(otn)) {
+      return respond(200, JSON.stringify({ code: 1, msg: 'ok', trade_no: 'MOCKT' + otn.slice(-8) }))
+    }
+    return respond(200, JSON.stringify({ code: 0, msg: '订单不存在或已完成' }))
+  }
+  if (u.pathname === '/lpay/distribute' && (opts.method || '').toUpperCase() === 'POST') {
+    const auth = (opts.headers && opts.headers.Authorization) || ''
+    const expect = 'Basic ' + btoa('goodpid:goodsecret')
+    if (auth !== expect) return respond(401, JSON.stringify({ error_msg: '鉴权失败' }))
+    let body
+    try { body = JSON.parse(opts.data) } catch { return respond(200, '<html>bad gateway</html>') }
+    if (typeof body.user_id !== 'number') return respond(200, JSON.stringify({ error_msg: 'user_id 必须是数字' }))
+    if (body.user_id === 999999) return respond(200, JSON.stringify({ error_msg: '收款人不存在' }))
+    if (/fail/i.test(body.username || '')) return respond(200, JSON.stringify({ error_msg: '余额不足' }))
+    if (/unknown/i.test(body.username || '')) {
+      window.__processed.add(body.out_trade_no)
+      return netfail()
+    }
+    return respond(200, JSON.stringify({ code: 1, data: { trade_no: 'MOCK' + Math.random().toString(36).slice(2, 10) } }))
+  }
+  return respond(404, '404 page not found')
+}
+</script>
+<script src="../ldc-batch-distribute.user.js"></script>
+<script>
+window.addEventListener('load', () => {
+  if (window.__menuFns.length) window.__menuFns[0]()
+  document.title = 'FRP-HARNESS-READY'
+})
+</script>
+</body>
+</html>

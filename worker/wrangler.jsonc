@@ -1,0 +1,10 @@
+{
+  // Cloudflare Worker：LDC 支付中继（透传，无状态无存储）
+  // 部署：cd worker && npx wrangler deploy
+  // 可选环境变量（推荐用 secret 而非明文 vars）：
+  //   npx wrangler secret put SHARED_TOKEN    # 中继口令，与页面「中继口令」一致
+  //   npx wrangler deploy --var ALLOW_ORIGIN:https://你的用户名.github.io
+  "name": "ldc-redpacket-relay",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-01"
+}

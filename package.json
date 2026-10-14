@@ -1,0 +1,18 @@
+{
+  "name": "ldc-batch-distribute",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LDC 批量分发：Tampermonkey 用户脚本，纯前端批量打款，无后端无数据库，数据存本机",
+  "main": "ldc-batch-distribute.user.js",
+  "scripts": {
+    "test": "npm run test:userscript && npm run test:web && npm run test:worker",
+    "test:userscript": "node test/e2e.test.mjs",
+    "test:web": "node test/e2e.web.test.mjs",
+    "test:worker": "node test/worker.test.mjs",
+    "build:web": "python3 tools/derive-web-page.py"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
